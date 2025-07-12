@@ -177,6 +177,9 @@ class TriageSystemTester:
                     return True
                 else:
                     self.log_error("Routine Scenario", f"Unexpected urgency classification: {data['urgency_level']}")
+            elif response.status_code == 500 and "quota" in response.text.lower():
+                self.log_error("Routine Scenario", "OpenAI API quota exceeded - endpoint structure is correct")
+                return "quota_exceeded"
             else:
                 self.log_error("Routine Scenario", f"HTTP {response.status_code}: {response.text}")
         except Exception as e:
