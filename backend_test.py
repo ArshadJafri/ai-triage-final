@@ -32,13 +32,20 @@ print(f"Testing backend at: {API_BASE}")
 class TriageSystemTester:
     def __init__(self):
         self.session_id = None
+        self.consultation_id = None
+        self.patient_id = None
+        self.provider_id = None
         self.test_results = {
             "openai_integration": False,
             "api_endpoints": False,
             "mongodb_operations": False,
             "ai_analysis": False,
             "emergency_scenario": False,
-            "routine_scenario": False
+            "routine_scenario": False,
+            "video_consultation_system": False,
+            "provider_management": False,
+            "socket_io_connectivity": False,
+            "consultation_workflow": False
         }
         self.errors = []
 
