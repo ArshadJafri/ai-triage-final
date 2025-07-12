@@ -86,11 +86,20 @@ function App() {
     setChatMessages(prev => [...prev, userMessage]);
     
     try {
-      const response = await axios.post(`${API}/triage/chat/${sessionId}?message=${encodeURIComponent(chatInput)}`);
+      const response = await axios.post(`${API}/triage/chat/${sessionId}`, {
+        message: chatInput
+      });
       const aiMessage = { sender: 'ai', message: response.data.response, timestamp: new Date() };
       setChatMessages(prev => [...prev, aiMessage]);
     } catch (error) {
       console.error('Error sending chat message:', error);
+      // Add error message to chat
+      const errorMessage = { 
+        sender: 'ai', 
+        message: 'I apologize, but I\'m having trouble responding right now. Please try again or consult with a healthcare professional if this is urgent.', 
+        timestamp: new Date() 
+      };
+      setChatMessages(prev => [...prev, errorMessage]);
     }
     
     setChatInput('');
