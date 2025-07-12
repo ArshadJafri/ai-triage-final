@@ -204,10 +204,11 @@ class TriageSystemTester:
             return False
 
         try:
-            # Test chat with follow-up question as query parameter
-            message = "Can you tell me more about when I should seek immediate care?"
+            # Test chat with JSON body (not query parameter)
+            message_data = {"message": "Can you tell me more about when I should seek immediate care?"}
             response = requests.post(
-                f"{API_BASE}/triage/chat/{self.session_id}?message={message}",
+                f"{API_BASE}/triage/chat/{self.session_id}",
+                json=message_data,
                 timeout=30
             )
             
