@@ -513,13 +513,19 @@ class TriageSystemTester:
         emergency_success = self.test_emergency_symptom_scenario()
         routine_success = self.test_routine_symptom_scenario()
 
-        # Test other endpoints
+        # Test other triage endpoints
         chat_success = self.test_chat_endpoint()
         session_success = self.test_session_retrieval()
         stats_success = self.test_urgency_stats()
 
         # Test OpenAI integration
         openai_success = self.test_openai_integration()
+
+        # Test new video consultation features
+        provider_success = self.test_provider_management()
+        consultation_success = self.test_video_consultation_system()
+        socket_success = self.test_socket_io_connectivity()
+        workflow_success = self.test_complete_consultation_workflow()
 
         # Update test results
         self.test_results["api_endpoints"] = all([
@@ -532,7 +538,15 @@ class TriageSystemTester:
         # Print summary
         self.print_test_summary()
         
-        return self.test_results["api_endpoints"] and self.test_results["openai_integration"]
+        # Overall success criteria
+        critical_tests_passed = all([
+            self.test_results["api_endpoints"],
+            self.test_results["provider_management"],
+            self.test_results["video_consultation_system"],
+            self.test_results["socket_io_connectivity"]
+        ])
+        
+        return critical_tests_passed
 
     def print_test_summary(self):
         """Print comprehensive test summary"""
