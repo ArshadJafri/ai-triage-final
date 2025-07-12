@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -11,6 +11,9 @@ import uuid
 from datetime import datetime
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 import json
+import socketio
+from socketio import AsyncServer
+import asyncio
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -23,8 +26,16 @@ db = client[os.environ['DB_NAME']]
 # Create the main app without a prefix
 app = FastAPI()
 
+# Create Socket.IO server for WebRTC signaling
+sio = AsyncServer(cors_allowed_origins="*", async_mode="asgi")
+socket_app = socketio.ASGIApp(sio)
+
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
+
+# WebRTC connection management
+active_calls = {}  # call_id -> {patient_socket, provider_socket, status}
+waiting_room = {}  # patient_id -> {socket_id, triage_data, wait_time}
 
 # Models
 class StatusCheck(BaseModel):
@@ -48,11 +59,13 @@ class SymptomInput(BaseModel):
 class TriageSession(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     patient_id: Optional[str] = None
+    patient_name: Optional[str] = None
     symptoms: Optional[SymptomInput] = None
     urgency_level: Optional[str] = None  # Emergency, Urgent, Routine, Self-Care
     ai_analysis: Optional[str] = None
     recommended_actions: Optional[List[str]] = None
     confidence_score: Optional[float] = None
+    status: str = "pending"  # pending, in_consultation, completed
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -66,7 +79,41 @@ class ChatResponse(BaseModel):
     response: str
     follow_up_questions: Optional[List[str]] = None
 
-# Initialize OpenAI chat
+class VideoConsultation(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    triage_session_id: str
+    patient_id: str
+    provider_id: Optional[str] = None
+    status: str = "waiting"  # waiting, in_progress, completed, cancelled
+    scheduled_time: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    recording_url: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class Provider(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    email: str
+    specialization: str
+    license_number: str
+    status: str = "available"  # available, busy, offline
+    rating: float = 5.0
+    consultations_count: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class Patient(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    email: str
+    phone: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    emergency_contact: Optional[str] = None
+    insurance_info: Optional[Dict] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+# Initialize OpenAI chat (with error handling for quota)
 def get_ai_chat(session_id: str):
     return LlmChat(
         api_key=os.environ['OPENAI_API_KEY'],
@@ -290,8 +337,298 @@ async def get_urgency_stats():
     stats = await db.triage_sessions.aggregate(pipeline).to_list(10)
     return {"urgency_stats": stats}
 
+# Video Consultation Routes
+@api_router.post("/consultation/create")
+async def create_consultation(triage_session_id: str, patient_name: str):
+    """Create a video consultation from triage session"""
+    # Get triage session
+    triage_session = await db.triage_sessions.find_one({"id": triage_session_id})
+    if not triage_session:
+        raise HTTPException(status_code=404, detail="Triage session not found")
+    
+    # Create patient if not exists
+    patient_id = str(uuid.uuid4())
+    patient = Patient(id=patient_id, name=patient_name, email=f"{patient_name.lower().replace(' ', '')}@temp.com")
+    await db.patients.insert_one(patient.dict())
+    
+    # Create consultation
+    consultation = VideoConsultation(
+        triage_session_id=triage_session_id,
+        patient_id=patient_id,
+        status="waiting"
+    )
+    await db.consultations.insert_one(consultation.dict())
+    
+    # Update triage session
+    await db.triage_sessions.update_one(
+        {"id": triage_session_id},
+        {"$set": {"patient_id": patient_id, "patient_name": patient_name, "status": "waiting_consultation"}}
+    )
+    
+    return {
+        "consultation_id": consultation.id,
+        "patient_id": patient_id,
+        "status": "waiting",
+        "estimated_wait": "5-10 minutes"
+    }
+
+@api_router.get("/consultation/queue")
+async def get_consultation_queue():
+    """Get patient queue for providers"""
+    pipeline = [
+        {
+            "$lookup": {
+                "from": "triage_sessions",
+                "localField": "triage_session_id",
+                "foreignField": "id",
+                "as": "triage"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "patients",
+                "localField": "patient_id",
+                "foreignField": "id",
+                "as": "patient"
+            }
+        },
+        {"$match": {"status": {"$in": ["waiting", "in_progress"]}}},
+        {"$sort": {"created_at": 1}}
+    ]
+    
+    queue = await db.consultations.aggregate(pipeline).to_list(50)
+    
+    # Process queue data
+    processed_queue = []
+    for item in queue:
+        triage_data = item.get("triage", [{}])[0]
+        patient_data = item.get("patient", [{}])[0]
+        
+        processed_queue.append({
+            "consultation_id": item["id"],
+            "patient_name": patient_data.get("name", "Unknown"),
+            "urgency_level": triage_data.get("urgency_level", "Routine"),
+            "symptoms": triage_data.get("symptoms", {}),
+            "wait_time": (datetime.utcnow() - item["created_at"]).seconds // 60,
+            "status": item["status"]
+        })
+    
+    return {"queue": processed_queue}
+
+@api_router.post("/consultation/{consultation_id}/start")
+async def start_consultation(consultation_id: str, provider_id: str):
+    """Start a video consultation"""
+    consultation = await db.consultations.find_one({"id": consultation_id})
+    if not consultation:
+        raise HTTPException(status_code=404, detail="Consultation not found")
+    
+    # Update consultation status
+    await db.consultations.update_one(
+        {"id": consultation_id},
+        {
+            "$set": {
+                "provider_id": provider_id,
+                "status": "in_progress",
+                "started_at": datetime.utcnow()
+            }
+        }
+    )
+    
+    return {"message": "Consultation started", "consultation_id": consultation_id}
+
+@api_router.post("/consultation/{consultation_id}/end")
+async def end_consultation(consultation_id: str, notes: str = ""):
+    """End a video consultation"""
+    await db.consultations.update_one(
+        {"id": consultation_id},
+        {
+            "$set": {
+                "status": "completed",
+                "ended_at": datetime.utcnow(),
+                "notes": notes
+            }
+        }
+    )
+    
+    return {"message": "Consultation ended", "consultation_id": consultation_id}
+
+@api_router.get("/consultation/{consultation_id}")
+async def get_consultation(consultation_id: str):
+    """Get consultation details"""
+    consultation = await db.consultations.find_one({"id": consultation_id})
+    if not consultation:
+        raise HTTPException(status_code=404, detail="Consultation not found")
+    
+    return consultation
+
+# Provider Routes
+@api_router.post("/providers")
+async def create_provider(provider: Provider):
+    """Create a new provider"""
+    await db.providers.insert_one(provider.dict())
+    return provider
+
+@api_router.get("/providers")
+async def get_providers():
+    """Get all providers"""
+    providers = await db.providers.find().to_list(100)
+    return providers
+
+@api_router.get("/providers/available")
+async def get_available_providers():
+    """Get available providers"""
+    providers = await db.providers.find({"status": "available"}).to_list(100)
+    return providers
+
+# Socket.IO Events for WebRTC
+@sio.event
+async def connect(sid, environ):
+    print(f"Client {sid} connected")
+
+@sio.event
+async def disconnect(sid):
+    print(f"Client {sid} disconnected")
+    # Clean up any active calls
+    for call_id, call_data in list(active_calls.items()):
+        if call_data.get("patient_socket") == sid or call_data.get("provider_socket") == sid:
+            # Notify other party of disconnection
+            other_sid = call_data.get("provider_socket") if call_data.get("patient_socket") == sid else call_data.get("patient_socket")
+            if other_sid:
+                await sio.emit("call_ended", {"reason": "peer_disconnected"}, room=other_sid)
+            del active_calls[call_id]
+
+@sio.event
+async def join_waiting_room(sid, data):
+    """Patient joins waiting room"""
+    consultation_id = data.get("consultation_id")
+    triage_data = data.get("triage_data", {})
+    
+    waiting_room[consultation_id] = {
+        "socket_id": sid,
+        "triage_data": triage_data,
+        "joined_at": datetime.utcnow()
+    }
+    
+    await sio.emit("waiting_room_joined", {"consultation_id": consultation_id}, room=sid)
+    
+    # Notify providers of new patient in queue
+    await sio.emit("queue_updated", {"action": "patient_joined", "consultation_id": consultation_id})
+
+@sio.event
+async def provider_ready(sid, data):
+    """Provider indicates they're ready to take calls"""
+    provider_id = data.get("provider_id")
+    await sio.emit("provider_online", {"provider_id": provider_id})
+
+@sio.event
+async def start_call(sid, data):
+    """Initiate video call between patient and provider"""
+    consultation_id = data.get("consultation_id")
+    caller_type = data.get("caller_type")  # "patient" or "provider"
+    
+    call_id = str(uuid.uuid4())
+    
+    if caller_type == "provider":
+        # Provider starting call with patient
+        patient_data = waiting_room.get(consultation_id)
+        if patient_data:
+            patient_sid = patient_data["socket_id"]
+            active_calls[call_id] = {
+                "patient_socket": patient_sid,
+                "provider_socket": sid,
+                "consultation_id": consultation_id,
+                "status": "connecting"
+            }
+            
+            # Notify patient of incoming call
+            await sio.emit("incoming_call", {
+                "call_id": call_id,
+                "consultation_id": consultation_id,
+                "from": "provider"
+            }, room=patient_sid)
+            
+            # Remove from waiting room
+            del waiting_room[consultation_id]
+
+@sio.event
+async def accept_call(sid, data):
+    """Accept incoming video call"""
+    call_id = data.get("call_id")
+    if call_id in active_calls:
+        active_calls[call_id]["status"] = "active"
+        
+        # Notify both parties
+        await sio.emit("call_accepted", {"call_id": call_id}, room=active_calls[call_id]["patient_socket"])
+        await sio.emit("call_accepted", {"call_id": call_id}, room=active_calls[call_id]["provider_socket"])
+
+@sio.event
+async def webrtc_offer(sid, data):
+    """Forward WebRTC offer"""
+    call_id = data.get("call_id")
+    offer = data.get("offer")
+    
+    if call_id in active_calls:
+        call_data = active_calls[call_id]
+        target_sid = call_data["provider_socket"] if call_data["patient_socket"] == sid else call_data["patient_socket"]
+        
+        await sio.emit("webrtc_offer", {
+            "call_id": call_id,
+            "offer": offer,
+            "from": sid
+        }, room=target_sid)
+
+@sio.event
+async def webrtc_answer(sid, data):
+    """Forward WebRTC answer"""
+    call_id = data.get("call_id")
+    answer = data.get("answer")
+    
+    if call_id in active_calls:
+        call_data = active_calls[call_id]
+        target_sid = call_data["provider_socket"] if call_data["patient_socket"] == sid else call_data["patient_socket"]
+        
+        await sio.emit("webrtc_answer", {
+            "call_id": call_id,
+            "answer": answer,
+            "from": sid
+        }, room=target_sid)
+
+@sio.event
+async def webrtc_ice_candidate(sid, data):
+    """Forward ICE candidates"""
+    call_id = data.get("call_id")
+    candidate = data.get("candidate")
+    
+    if call_id in active_calls:
+        call_data = active_calls[call_id]
+        target_sid = call_data["provider_socket"] if call_data["patient_socket"] == sid else call_data["patient_socket"]
+        
+        await sio.emit("webrtc_ice_candidate", {
+            "call_id": call_id,
+            "candidate": candidate,
+            "from": sid
+        }, room=target_sid)
+
+@sio.event
+async def end_call(sid, data):
+    """End video call"""
+    call_id = data.get("call_id")
+    
+    if call_id in active_calls:
+        call_data = active_calls[call_id]
+        
+        # Notify both parties
+        await sio.emit("call_ended", {"call_id": call_id}, room=call_data["patient_socket"])
+        await sio.emit("call_ended", {"call_id": call_id}, room=call_data["provider_socket"])
+        
+        # Clean up
+        del active_calls[call_id]
+
 # Include the router in the main app
 app.include_router(api_router)
+
+# Mount Socket.IO
+app.mount("/socket.io", socket_app)
 
 app.add_middleware(
     CORSMiddleware,
