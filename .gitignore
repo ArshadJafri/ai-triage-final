@@ -89,4 +89,24 @@ agenthub/agents/youtube/db
 .cache/
 
 # Mobile development
-android-sdk/ 
+android-sdk/
+
+# MongoDB and Database files
+mongodb_data/
+*.db
+*.sqlite3
+*.sqlite
+
+# Additional log files
+*.log
+logs/
+
+# IDE specific
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific
+Thumbs.db
+ehthumbs.db
