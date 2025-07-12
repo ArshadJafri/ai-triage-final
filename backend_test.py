@@ -576,13 +576,199 @@ class TriageSystemTester:
         else:
             print("🚨 CRITICAL ISSUES DETECTED. Backend needs attention.")
 
+    def test_mongodb_objectid_serialization_fixes(self):
+        """Test specific MongoDB ObjectId serialization fixes for the three endpoints"""
+        print("\n🔍 Testing MongoDB ObjectId Serialization Fixes...")
+        print("Testing endpoints: GET /api/triage/session/{session_id}, GET /api/providers, GET /api/consultation/{consultation_id}")
+        
+        serialization_results = {
+            "triage_session_endpoint": False,
+            "providers_endpoint": False,
+            "consultation_endpoint": False
+        }
+        
+        # 1. Test GET /api/triage/session/{session_id} - Should return clean JSON without MongoDB _id fields
+        if self.session_id:
+            try:
+                response = requests.get(f"{API_BASE}/triage/session/{self.session_id}", timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    # Check session data for _id fields
+                    session_data = data.get("session", {})
+                    chat_history = data.get("chat_history", [])
+                    
+                    has_session_id = "_id" not in session_data
+                    has_clean_chat = all("_id" not in msg for msg in chat_history)
+                    
+                    if has_session_id and has_clean_chat:
+                        self.log_success("Triage Session ObjectId Fix", "No _id fields found in response")
+                        serialization_results["triage_session_endpoint"] = True
+                    else:
+                        issues = []
+                        if not has_session_id:
+                            issues.append("session contains _id field")
+                        if not has_clean_chat:
+                            issues.append("chat_history contains _id fields")
+                        self.log_error("Triage Session ObjectId Fix", f"Found _id fields: {', '.join(issues)}")
+                else:
+                    self.log_error("Triage Session ObjectId Fix", f"HTTP {response.status_code}: {response.text}")
+            except Exception as e:
+                self.log_error("Triage Session ObjectId Fix", f"Request failed: {str(e)}")
+        else:
+            self.log_error("Triage Session ObjectId Fix", "No session_id available for testing")
+        
+        # 2. Test GET /api/providers - Should return provider list without _id fields
+        try:
+            response = requests.get(f"{API_BASE}/providers", timeout=10)
+            if response.status_code == 200:
+                providers = response.json()
+                if isinstance(providers, list):
+                    has_clean_providers = all("_id" not in provider for provider in providers)
+                    
+                    if has_clean_providers:
+                        self.log_success("Providers ObjectId Fix", f"No _id fields found in {len(providers)} providers")
+                        serialization_results["providers_endpoint"] = True
+                    else:
+                        providers_with_id = [i for i, p in enumerate(providers) if "_id" in p]
+                        self.log_error("Providers ObjectId Fix", f"Found _id fields in providers at indices: {providers_with_id}")
+                else:
+                    self.log_error("Providers ObjectId Fix", "Response is not a list")
+            else:
+                self.log_error("Providers ObjectId Fix", f"HTTP {response.status_code}: {response.text}")
+        except Exception as e:
+            self.log_error("Providers ObjectId Fix", f"Request failed: {str(e)}")
+        
+        # 3. Test GET /api/consultation/{consultation_id} - Should return consultation details without _id fields
+        if self.consultation_id:
+            try:
+                response = requests.get(f"{API_BASE}/consultation/{self.consultation_id}", timeout=10)
+                if response.status_code == 200:
+                    consultation = response.json()
+                    
+                    has_clean_consultation = "_id" not in consultation
+                    
+                    if has_clean_consultation:
+                        self.log_success("Consultation ObjectId Fix", "No _id field found in consultation")
+                        serialization_results["consultation_endpoint"] = True
+                    else:
+                        self.log_error("Consultation ObjectId Fix", "Found _id field in consultation response")
+                else:
+                    self.log_error("Consultation ObjectId Fix", f"HTTP {response.status_code}: {response.text}")
+            except Exception as e:
+                self.log_error("Consultation ObjectId Fix", f"Request failed: {str(e)}")
+        else:
+            self.log_error("Consultation ObjectId Fix", "No consultation_id available for testing")
+        
+        # Summary of ObjectId serialization fixes
+        all_fixed = all(serialization_results.values())
+        fixed_count = sum(serialization_results.values())
+        total_endpoints = len(serialization_results)
+        
+        print(f"\n📊 ObjectId Serialization Fix Results: {fixed_count}/{total_endpoints} endpoints fixed")
+        for endpoint, fixed in serialization_results.items():
+            status = "✅" if fixed else "❌"
+            print(f"  {status} {endpoint.replace('_', ' ').title()}")
+        
+        if all_fixed:
+            self.log_success("MongoDB ObjectId Serialization", "All three endpoints return clean JSON without _id fields")
+        else:
+            failed_endpoints = [k for k, v in serialization_results.items() if not v]
+            self.log_error("MongoDB ObjectId Serialization", f"Failed endpoints: {', '.join(failed_endpoints)}")
+        
+        return all_fixed
+
 if __name__ == "__main__":
-    tester = TriageSystemTester()
-    success = tester.run_all_tests()
-    
-    if success:
-        print("\n✅ Backend testing completed successfully!")
-        exit(0)
+    # Check if this is a focused ObjectId serialization test
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--objectid-test":
+        print("🎯 Running Focused MongoDB ObjectId Serialization Test")
+        print("=" * 60)
+        
+        tester = TriageSystemTester()
+        
+        # Run minimal setup tests
+        if not tester.test_basic_connectivity():
+            print("❌ CRITICAL: Basic connectivity failed")
+            exit(1)
+        
+        if not tester.test_triage_start_endpoint():
+            print("❌ CRITICAL: Cannot create triage sessions")
+            exit(1)
+        
+        # Create test data needed for the ObjectId tests
+        print("\n🔧 Setting up test data...")
+        
+        # Create provider for testing
+        provider_success = tester.test_provider_management()
+        if not provider_success:
+            print("⚠️  Provider creation failed, will test providers endpoint anyway")
+        
+        # Create consultation for testing (requires session)
+        consultation_success = False
+        if tester.session_id:
+            try:
+                # Submit symptoms to have data in session
+                emergency_symptoms = {
+                    "location": "chest",
+                    "symptoms": ["Sharp pain"],
+                    "severity": 8,
+                    "duration": "2 hours",
+                    "associated_symptoms": ["Shortness of breath"],
+                    "medical_history": [],
+                    "age": 45,
+                    "gender": "male"
+                }
+                
+                response = requests.post(
+                    f"{tester.API_BASE}/triage/symptoms/{tester.session_id}",
+                    json=emergency_symptoms,
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    print("✅ Symptoms submitted for session")
+                    
+                    # Create consultation
+                    response = requests.post(
+                        f"{tester.API_BASE}/consultation/create",
+                        params={"triage_session_id": tester.session_id, "patient_name": "Test Patient"},
+                        timeout=10
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        tester.consultation_id = data.get("consultation_id")
+                        consultation_success = True
+                        print(f"✅ Consultation created: {tester.consultation_id}")
+                    else:
+                        print(f"⚠️  Consultation creation failed: {response.status_code}")
+                else:
+                    print(f"⚠️  Symptom submission failed: {response.status_code}")
+                    
+            except Exception as e:
+                print(f"⚠️  Test data setup error: {str(e)}")
+        
+        # Run the focused ObjectId serialization test
+        print("\n" + "=" * 60)
+        success = tester.test_mongodb_objectid_serialization_fixes()
+        
+        if success:
+            print("\n🎉 MongoDB ObjectId Serialization Fixes: ALL TESTS PASSED!")
+            print("✅ All three endpoints return clean JSON without MongoDB _id fields")
+            exit(0)
+        else:
+            print("\n❌ MongoDB ObjectId Serialization Fixes: SOME TESTS FAILED!")
+            print("❌ One or more endpoints still contain MongoDB _id fields")
+            exit(1)
     else:
-        print("\n❌ Backend testing failed!")
-        exit(1)
+        # Run full test suite
+        tester = TriageSystemTester()
+        success = tester.run_all_tests()
+        
+        if success:
+            print("\n✅ Backend testing completed successfully!")
+            exit(0)
+        else:
+            print("\n❌ Backend testing failed!")
+            exit(1)
