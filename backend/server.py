@@ -312,8 +312,15 @@ async def get_triage_session(session_id: str):
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
         
+        # Remove MongoDB _id field
+        if "_id" in session:
+            del session["_id"]
+        
         # Get chat history
         chat_messages = await db.chat_messages.find({"session_id": session_id}).to_list(100)
+        for msg in chat_messages:
+            if "_id" in msg:
+                del msg["_id"]
         
         return {
             "session": session,
