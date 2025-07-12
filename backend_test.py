@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
 Comprehensive Backend Testing for Telehealth AI Triage System
-Tests OpenAI integration, API endpoints, MongoDB operations, and AI medical analysis
+Tests OpenAI integration, API endpoints, MongoDB operations, AI medical analysis,
+Video Consultation System, Provider Management, and Socket.IO WebRTC Signaling
 """
 
 import requests
 import json
 import time
 import os
+import socketio
+import asyncio
 from datetime import datetime
 
 # Get backend URL from frontend .env file
