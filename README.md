@@ -100,5 +100,25 @@ Ensure MongoDB is running on your system. The application will automatically cre
 ## Development
 The project follows a modular architecture with clear separation between frontend and backend. All API endpoints are prefixed with `/api` for proper routing.
 
+## GitHub Setup
+This project includes a comprehensive `.gitignore` file that protects sensitive information:
+
+### Protected Files:
+- `.env` files containing API keys and secrets
+- `node_modules` and build artifacts
+- Database files and logs
+- IDE-specific files
+
+### Before Pushing to GitHub:
+1. Ensure your API keys are in `.env` files (these are ignored by git)
+2. Use the provided `.env.example` files as templates
+3. Never commit actual API keys or sensitive configuration
+
+### Environment Setup for New Developers:
+1. Clone the repository
+2. Copy `.env.example` to `.env` in both frontend and backend directories
+3. Fill in the actual values in your local `.env` files
+4. Follow the installation instructions above
+
 ## Support
 For technical issues or questions, refer to the test_result.md file for testing protocols and known issues.
