@@ -182,9 +182,13 @@ Please provide your medical triage assessment.
         raise HTTPException(status_code=500, detail=f"Error processing symptoms: {str(e)}")
 
 @api_router.post("/triage/chat/{session_id}")
-async def chat_with_ai(session_id: str, message: str):
+async def chat_with_ai(session_id: str, request: dict):
     """Continue conversation with AI for symptom clarification"""
     try:
+        message = request.get("message", "")
+        if not message:
+            raise HTTPException(status_code=400, detail="Message is required")
+            
         # Save user message
         user_msg = ChatMessage(
             session_id=session_id,
@@ -209,22 +213,29 @@ async def chat_with_ai(session_id: str, message: str):
         return {"response": ai_response}
         
     except Exception as e:
+        if "quota" in str(e).lower():
+            return {"response": "I'm currently experiencing high demand. Please try again in a few moments, or consult with a healthcare professional if this is urgent."}
         raise HTTPException(status_code=500, detail=f"Error in chat: {str(e)}")
 
 @api_router.get("/triage/session/{session_id}")
 async def get_triage_session(session_id: str):
     """Get triage session details"""
-    session = await db.triage_sessions.find_one({"id": session_id})
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    # Get chat history
-    chat_messages = await db.chat_messages.find({"session_id": session_id}).to_list(100)
-    
-    return {
-        "session": session,
-        "chat_history": chat_messages
-    }
+    try:
+        session = await db.triage_sessions.find_one({"id": session_id})
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Get chat history
+        chat_messages = await db.chat_messages.find({"session_id": session_id}).to_list(100)
+        
+        return {
+            "session": session,
+            "chat_history": chat_messages
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving session: {str(e)}")
 
 @api_router.get("/triage/urgency-stats")
 async def get_urgency_stats():
