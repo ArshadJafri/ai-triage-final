@@ -61,6 +61,10 @@ SmartMed Connect is a comprehensive telehealth platform featuring AI-powered pat
    ```
 
 3. Configure environment variables in `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+   Then edit `.env` with your actual values:
    ```
    REACT_APP_BACKEND_URL=http://localhost:8001
    ```
