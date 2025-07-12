@@ -466,6 +466,10 @@ async def get_consultation(consultation_id: str):
     if not consultation:
         raise HTTPException(status_code=404, detail="Consultation not found")
     
+    # Remove MongoDB _id field
+    if "_id" in consultation:
+        del consultation["_id"]
+    
     return consultation
 
 # Provider Routes
