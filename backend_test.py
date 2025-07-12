@@ -731,7 +731,7 @@ if __name__ == "__main__":
                     
                     # Create consultation
                     response = requests.post(
-                        f"{tester.API_BASE}/consultation/create",
+                        f"{API_BASE}/consultation/create",
                         params={"triage_session_id": tester.session_id, "patient_name": "Test Patient"},
                         timeout=10
                     )
