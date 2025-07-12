@@ -179,6 +179,46 @@ Please provide your medical triage assessment.
         }
         
     except Exception as e:
+        # Handle OpenAI quota exceeded gracefully
+        if "quota" in str(e).lower() or "rate" in str(e).lower():
+            # Provide fallback response based on symptom severity
+            fallback_urgency = "Routine"
+            fallback_analysis = "Our AI system is currently experiencing high demand. Based on your symptoms, please consider consulting with a healthcare provider."
+            fallback_actions = ["Schedule an appointment with your healthcare provider", "Monitor your symptoms", "Seek immediate care if symptoms worsen"]
+            
+            # Adjust urgency based on severity and symptoms
+            if symptoms.severity >= 8 or any(emergency_symptom in [s.lower() for s in symptoms.symptoms] for emergency_symptom in ['chest pain', 'difficulty breathing', 'severe bleeding']):
+                fallback_urgency = "Urgent"
+                fallback_analysis = "Based on your high severity symptoms, you should seek medical attention promptly."
+                fallback_actions = ["Seek immediate medical attention", "Call emergency services if symptoms are severe", "Do not delay medical care"]
+            elif symptoms.severity >= 6:
+                fallback_urgency = "Urgent"
+                fallback_actions = ["Schedule same-day appointment if possible", "Monitor symptoms closely", "Seek immediate care if symptoms worsen"]
+            
+            # Update session with fallback data
+            update_data = {
+                "symptoms": symptoms.dict(),
+                "urgency_level": fallback_urgency,
+                "ai_analysis": fallback_analysis,
+                "recommended_actions": fallback_actions,
+                "confidence_score": 0.6,
+                "updated_at": datetime.utcnow()
+            }
+            
+            await db.triage_sessions.update_one(
+                {"id": session_id},
+                {"$set": update_data}
+            )
+            
+            return {
+                "session_id": session_id,
+                "urgency_level": fallback_urgency,
+                "analysis": fallback_analysis,
+                "recommended_actions": fallback_actions,
+                "confidence_score": 0.6,
+                "follow_up_questions": []
+            }
+        
         raise HTTPException(status_code=500, detail=f"Error processing symptoms: {str(e)}")
 
 @api_router.post("/triage/chat/{session_id}")
