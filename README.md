@@ -35,6 +35,10 @@ SmartMed Connect is a comprehensive telehealth platform featuring AI-powered pat
    ```
 
 3. Configure environment variables in `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+   Then edit `.env` with your actual values:
    ```
    MONGO_URL=mongodb://localhost:27017/smartmed_connect
    OPENAI_API_KEY=your_openai_api_key_here
