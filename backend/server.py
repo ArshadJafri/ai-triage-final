@@ -479,6 +479,9 @@ async def create_provider(provider: Provider):
 async def get_providers():
     """Get all providers"""
     providers = await db.providers.find().to_list(100)
+    for provider in providers:
+        if "_id" in provider:
+            del provider["_id"]
     return providers
 
 @api_router.get("/providers/available")
