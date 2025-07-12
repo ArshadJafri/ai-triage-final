@@ -721,7 +721,7 @@ if __name__ == "__main__":
                 }
                 
                 response = requests.post(
-                    f"{tester.API_BASE}/triage/symptoms/{tester.session_id}",
+                    f"{API_BASE}/triage/symptoms/{tester.session_id}",
                     json=emergency_symptoms,
                     timeout=30
                 )
