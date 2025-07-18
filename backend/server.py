@@ -9,11 +9,11 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime
-from emergentintegrations.llm.chat import LlmChat, UserMessage
 import json
 import socketio
 from socketio import AsyncServer
 import asyncio
+import openai
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -26,12 +26,23 @@ db = client[os.environ['DB_NAME']]
 # Create the main app without a prefix
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # or ["http://localhost:3000"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+
 # Create Socket.IO server for WebRTC signaling
-sio = AsyncServer(cors_allowed_origins="*", async_mode="asgi")
-socket_app = socketio.ASGIApp(sio)
+sio = AsyncServer(cors_allowed_origins="http://localhost:3000", async_mode="asgi")
+socket_app = socketio.ASGIApp(socketio_server=sio, other_asgi_app=app)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
+app.include_router(api_router)
 
 # WebRTC connection management
 active_calls = {}  # call_id -> {patient_socket, provider_socket, status}
@@ -113,29 +124,21 @@ class Patient(BaseModel):
     insurance_info: Optional[Dict] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
-# Initialize OpenAI chat (with error handling for quota)
-def get_ai_chat(session_id: str):
-    return LlmChat(
-        api_key=os.environ['OPENAI_API_KEY'],
-        session_id=session_id,
-        system_message="""You are an AI medical triage assistant. Your role is to:
-1. Analyze patient symptoms and provide accurate medical assessments
-2. Classify urgency levels: Emergency (immediate care), Urgent (same day), Routine (within days), Self-Care
-3. Ask clarifying questions to better understand symptoms
-4. Provide clear, helpful recommendations while emphasizing that this is not a substitute for professional medical advice
-5. Be empathetic and reassuring while maintaining medical accuracy
-
-Always respond in JSON format with the following structure:
-{
-    "analysis": "Your medical analysis",
-    "urgency_level": "Emergency|Urgent|Routine|Self-Care",
-    "confidence_score": 0.0-1.0,
-    "recommended_actions": ["action1", "action2"],
-    "follow_up_questions": ["question1", "question2"] (optional)
-}
-
-For emergency situations (severe chest pain, difficulty breathing, severe bleeding, etc.), always classify as "Emergency" and recommend immediate medical attention."""
-    ).with_model("openai", "gpt-4o")
+# Helper function to call OpenAI Chat API
+async def call_openai_chat(session_id: str, user_message: str, system_message: str = None):
+    openai.api_key = os.environ["OPENAI_API_KEY"]
+    messages = []
+    if system_message:
+        messages.append({"role": "system", "content": system_message})
+    messages.append({"role": "user", "content": user_message})
+    response = await openai.AsyncOpenAI().chat.completions.create(
+        model="gpt-4o",
+        messages=messages,
+        max_tokens=512,
+        temperature=0.2,
+        user=session_id
+    )
+    return response.choices[0].message.content
 
 # Basic routes
 @api_router.get("/")
@@ -166,9 +169,6 @@ async def start_triage():
 async def submit_symptoms(session_id: str, symptoms: SymptomInput):
     """Submit symptoms for AI analysis"""
     try:
-        # Get AI chat instance
-        ai_chat = get_ai_chat(session_id)
-        
         # Prepare symptom data for AI analysis
         symptom_data = f"""
 Patient presents with:
@@ -183,16 +183,11 @@ Patient presents with:
 
 Please provide your medical triage assessment.
 """
-        
-        # Get AI analysis
-        user_message = UserMessage(text=symptom_data)
-        ai_response = await ai_chat.send_message(user_message)
-        
-        # Parse AI response
+        system_message = """You are an AI medical triage assistant. Your role is to:\n1. Analyze patient symptoms and provide accurate medical assessments\n2. Classify urgency levels: Emergency (immediate care), Urgent (same day), Routine (within days), Self-Care\n3. Ask clarifying questions to better understand symptoms\n4. Provide clear, helpful recommendations while emphasizing that this is not a substitute for professional medical advice\n5. Be empathetic and reassuring while maintaining medical accuracy\n\nAlways respond in JSON format with the following structure:\n{\n    \"analysis\": \"Your medical analysis\",\n    \"urgency_level\": \"Emergency|Urgent|Routine|Self-Care\",\n    \"confidence_score\": 0.0-1.0,\n    \"recommended_actions\": [\"action1\", \"action2\"],\n    \"follow_up_questions\": [\"question1\", \"question2\"] (optional)\n}\n\nFor emergency situations (severe chest pain, difficulty breathing, severe bleeding, etc.), always classify as \"Emergency\" and recommend immediate medical attention."""
+        ai_response = await call_openai_chat(session_id, symptom_data, system_message)
         try:
             ai_data = json.loads(ai_response)
         except:
-            # Fallback if JSON parsing fails
             ai_data = {
                 "analysis": ai_response,
                 "urgency_level": "Routine",
@@ -200,8 +195,6 @@ Please provide your medical triage assessment.
                 "recommended_actions": ["Consult with a healthcare provider"],
                 "follow_up_questions": []
             }
-        
-        # Update session in database
         update_data = {
             "symptoms": symptoms.dict(),
             "urgency_level": ai_data.get("urgency_level", "Routine"),
@@ -210,12 +203,10 @@ Please provide your medical triage assessment.
             "confidence_score": ai_data.get("confidence_score", 0.7),
             "updated_at": datetime.utcnow()
         }
-        
         await db.triage_sessions.update_one(
             {"id": session_id},
             {"$set": update_data}
         )
-        
         return {
             "session_id": session_id,
             "urgency_level": ai_data.get("urgency_level"),
@@ -224,7 +215,6 @@ Please provide your medical triage assessment.
             "confidence_score": ai_data.get("confidence_score"),
             "follow_up_questions": ai_data.get("follow_up_questions", [])
         }
-        
     except Exception as e:
         # Handle OpenAI quota exceeded gracefully
         if "quota" in str(e).lower() or "rate" in str(e).lower():
@@ -284,10 +274,9 @@ async def chat_with_ai(session_id: str, request: dict):
         )
         await db.chat_messages.insert_one(user_msg.dict())
         
-        # Get AI response
-        ai_chat = get_ai_chat(session_id)
-        user_message = UserMessage(text=message)
-        ai_response = await ai_chat.send_message(user_message)
+        # Use the same system message as above for context
+        system_message = """You are an AI medical triage assistant. Your role is to:\n1. Analyze patient symptoms and provide accurate medical assessments\n2. Classify urgency levels: Emergency (immediate care), Urgent (same day), Routine (within days), Self-Care\n3. Ask clarifying questions to better understand symptoms\n4. Provide clear, helpful recommendations while emphasizing that this is not a substitute for professional medical advice\n5. Be empathetic and reassuring while maintaining medical accuracy\n\nAlways respond in JSON format with the following structure:\n{\n    \"analysis\": \"Your medical analysis\",\n    \"urgency_level\": \"Emergency|Urgent|Routine|Self-Care\",\n    \"confidence_score\": 0.0-1.0,\n    \"recommended_actions\": [\"action1\", \"action2\"],\n    \"follow_up_questions\": [\"question1\", \"question2\"] (optional)\n}\n\nFor emergency situations (severe chest pain, difficulty breathing, severe bleeding, etc.), always classify as \"Emergency\" and recommend immediate medical attention."""
+        ai_response = await call_openai_chat(session_id, message, system_message)
         
         # Save AI response
         ai_msg = ChatMessage(
@@ -644,13 +633,7 @@ app.include_router(api_router)
 # Mount Socket.IO
 app.mount("/socket.io", socket_app)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
 
 # Configure logging
 logging.basicConfig(
