@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: ai-triage-final
+    env: python
+    buildCommand: ""
+    startCommand: uvicorn backend.server:app --host 0.0.0.0 --port 10000
+    plan: free
+    envVars:
+      - key: MONGO_URI
+        sync: false
+
+build:
+  pythonVersion: 3.11
