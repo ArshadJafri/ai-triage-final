@@ -20,7 +20,7 @@ load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
+client = AsyncIOMotorClient(mongo_url,tls=True)
 db = client[os.environ['DB_NAME']]
 
 # Create the main app without a prefix
@@ -28,7 +28,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://ai-triage-final-h9wk172is-arshad-jafris-projects.vercel.app"],  # or ["http://localhost:3000"]
+    allow_origins=["https://ai-triage-final-h9wk172is-arshad-jafris-projects.vercel.app","https://ai-triage-final.vercel.app"],  # or ["http://localhost:3000"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
